@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -20,82 +21,68 @@ var (
 	ipv6        = flag.Bool("ipv6", true, "Connect to IPv6 targets too.")
 )
 
+// take arg line and return what to connect to, and the TLS hostname.
+// E.g.:
+//   foo/bar:443 -> bar:443, foo, nil
+//   foo:443 -> foo:443, foo, nil
 func parse(host string) (string, string, error) {
-	var connectHost, tlsHost string
 	t := strings.Split(host, "/")
 	if len(t) == 2 {
-		tlsHost, connectHost = t[0], t[1]
-	} else {
-		connectHost = host
-		tlsHost = host
+		return t[1], t[0], nil
 	}
 
-	var err error
-	tlsHost, _, err = net.SplitHostPort(tlsHost)
+	tlsHost, _, err := net.SplitHostPort(host)
 	if err != nil {
 		return "", "", err
 	}
-	return connectHost, tlsHost, nil
+	return host, tlsHost, nil
 }
 
-func check(ctx context.Context, host string) []error {
-	connectHost, tlsHost, err := parse(host)
+// return true for [2001:db8::1]:1234.
+func ipv6Endpoint(endpoint string) bool {
+	h, _, err := net.SplitHostPort(endpoint)
 	if err != nil {
-		return []error{err}
+		log.Fatalf("Internal error: can't split %q: %v", endpoint, err)
 	}
+	return strings.Contains(h, ":")
+}
 
-	// Dial.
-	h, connectPort, err := net.SplitHostPort(connectHost)
+// Try to connect to endpoint (host:port), and negotiate TLS with host `tlsHost`.
+func check(ctx context.Context, endpoint, tlsHost string) error {
+	// If IPv6 and IPv6 turned off, skip.
+	if !*ipv6 && ipv6Endpoint(endpoint) {
+		log.Debugf("Skipping IPv6 address %q", endpoint)
+		return nil
+	}
+	log.Debugf("Checking endpoint %q host %q", endpoint, tlsHost)
+
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", endpoint)
 	if err != nil {
-		return []error{err}
+		return err
 	}
-	allEndpoints, err := net.LookupHost(h)
-	if err != nil {
-		return []error{err}
+	defer conn.Close()
+
+	// TLS handshake.
+	c := tls.Client(conn, &tls.Config{
+		ServerName: tlsHost,
+	})
+	if err := c.Handshake(); err != nil {
+		return fmt.Errorf("handshake error for %q: %v", tlsHost, err)
 	}
-	var errs []error
-	for _, endpoint := range allEndpoints {
-		// If IPv6 and IPv6 turned off, skip.
-		if !*ipv6 && strings.Contains(endpoint, ":") {
-			log.Debugf("%q Skipping IPv6 address %q", host, endpoint)
-			continue
+	defer c.Close()
+
+	// Check connection state.
+	for _, cert := range c.ConnectionState().PeerCertificates {
+		if time.Now().After(cert.NotAfter) {
+			return fmt.Errorf("Expired cert %q", cert.Subject.CommonName)
 		}
-
-		// Set timeout per connection.
-		ctx2, cancel := context.WithTimeout(ctx, *timeout)
-		defer cancel()
-
-		dialer := net.Dialer{}
-		conn, err := dialer.DialContext(ctx2, "tcp", net.JoinHostPort(endpoint, connectPort))
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		defer conn.Close()
-
-		// TLS handshake.
-		c := tls.Client(conn, &tls.Config{
-			ServerName: tlsHost,
-		})
-		if err := c.Handshake(); err != nil {
-			return []error{fmt.Errorf("handshake error for %q: %v", tlsHost, err)}
-		}
-		defer c.Close()
-
-		// Check connection state.
-		s := c.ConnectionState()
-		for _, cert := range s.PeerCertificates {
-			if time.Now().After(cert.NotAfter) {
-				errs = append(errs, fmt.Errorf("%q: Expired cert %q", host, cert.Subject.CommonName))
-				continue
-			}
-			remaining := cert.NotAfter.Sub(time.Now())
-			if remaining < *warnTime {
-				log.Warningf("%q: Remaining time on %q: %v", host, cert.Subject.CommonName, remaining)
-			}
+		remaining := cert.NotAfter.Sub(time.Now())
+		if remaining < *warnTime {
+			log.Warningf("Remaining time on %q: %v", cert.Subject.CommonName, remaining)
 		}
 	}
-	return errs
+	return nil
 }
 
 func main() {
@@ -103,24 +90,72 @@ func main() {
 	ctx := context.Background()
 	sem := semaphore.NewWeighted(*concurrency)
 
-	// TODO: Do concurrent lookups here, then call concurrent checks.
-	for _, host := range flag.Args() {
-		host := host
+	//log.SetLevel(log.DebugLevel)
+
+	addrs := make([][]string, flag.NArg(), flag.NArg())
+	ports := make([]string, flag.NArg(), flag.NArg())
+	tlsHosts := make([]string, flag.NArg(), flag.NArg())
+	log.Debugf("Resolving…")
+	for n, line := range flag.Args() {
+		n := n
+		if line[0] == '#' {
+			continue
+		}
+		host, tlsHost, err := parse(line)
+		if err != nil {
+			log.Fatalf("Failed to parse line %q: %v", line, err)
+		}
+		var hostOnly string
+		hostOnly, ports[n], err = net.SplitHostPort(host)
+		if err != nil {
+			log.Fatalf("%q is not host:port: %v", host, err)
+		}
+		tlsHosts[n] = tlsHost
 		sem.Acquire(ctx, 1)
 		go func() {
 			defer sem.Release(1)
-			if host[0] == '#' {
-				return
+			var err error
+			addrs[n], err = net.LookupHost(hostOnly)
+			if err != nil {
+				log.Errorf("Failed to resolve %q: %v", hostOnly, err)
 			}
-
-			if errs := check(ctx, host); len(errs) > 0 {
-				for _, err := range errs {
-					log.Errorf("%q: %v", host, err)
-				}
-			} else {
-				log.Infof("%q: OK", host)
-			}
+			log.Debugf("Resolved %q to %d", host, len(addrs[n]))
 		}()
 	}
 	sem.Acquire(ctx, *concurrency)
+	sem.Release(*concurrency)
+
+	log.Debugf("Connecting…")
+	errCh := make(chan bool, 1)
+	for n, line := range flag.Args() {
+		n := n
+		line := line
+		for _, endpointAddr := range addrs[n] {
+			endpointAddr := endpointAddr
+			sem.Acquire(ctx, 1)
+			go func() {
+				defer sem.Release(1)
+
+				// Set timeout per connection.
+				ctx2, cancel := context.WithTimeout(ctx, *timeout)
+				defer cancel()
+
+				endpoint := net.JoinHostPort(endpointAddr, ports[n])
+				if err := check(ctx2, endpoint, tlsHosts[n]); err != nil {
+					log.Errorf("%q: Endpoint %q: %v", line, endpoint, err)
+					select {
+					case errCh <- true:
+					default:
+					}
+				}
+			}()
+		}
+	}
+	sem.Acquire(ctx, *concurrency)
+	select {
+	case <-errCh:
+		os.Exit(1)
+	default:
+		os.Exit(0)
+	}
 }
