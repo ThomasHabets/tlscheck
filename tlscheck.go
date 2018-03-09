@@ -19,6 +19,7 @@ var (
 	timeout     = flag.Duration("timeout", 10*time.Second, "Connection timeout.")
 	warnTime    = flag.Duration("warn_time", 7*24*time.Hour, "Warn if expiring soon.")
 	ipv6        = flag.Bool("ipv6", true, "Connect to IPv6 targets too.")
+	debug       = flag.Bool("debug", false, "Debug.")
 )
 
 // take arg line and return what to connect to, and the TLS hostname.
@@ -90,7 +91,9 @@ func main() {
 	ctx := context.Background()
 	sem := semaphore.NewWeighted(*concurrency)
 
-	//log.SetLevel(log.DebugLevel)
+	if *debug {
+		log.SetLevel(log.DebugLevel)
+	}
 
 	addrs := make([][]string, flag.NArg(), flag.NArg())
 	ports := make([]string, flag.NArg(), flag.NArg())
