@@ -78,12 +78,27 @@ func check(ctx context.Context, endpoint, tlsHost string) error {
 		if time.Now().After(cert.NotAfter) {
 			return fmt.Errorf("Expired cert %q", cert.Subject.CommonName)
 		}
-		remaining := cert.NotAfter.Sub(time.Now())
+		remaining := durTrunc(cert.NotAfter.Sub(time.Now()), time.Hour)
 		if remaining < *warnTime {
-			log.Warningf("Remaining time on %q: %v", cert.Subject.CommonName, remaining)
+			log.Warningf("Remaining time on %q endpoint %q: %v (%v)", cert.Subject.CommonName, endpoint, durFormat(remaining), cert.NotAfter)
 		}
 	}
 	return nil
+}
+
+// time.Duration.Truncate() doesn't seem to be in Go 1.8.
+func durTrunc(d time.Duration, t time.Duration) time.Duration {
+	return d - (d % t)
+}
+
+func durFormat(d time.Duration) string {
+	ret := ""
+	if d > 24*time.Hour {
+		ret += fmt.Sprintf("%dd ", d/(24*time.Hour))
+		d %= 24 * time.Hour
+	}
+	ret += fmt.Sprintf("%dh", d/time.Hour)
+	return ret
 }
 
 func main() {
