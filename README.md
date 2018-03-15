@@ -14,6 +14,6 @@ www.bing.com:443
 www.bing.com/a-0001.a-msedge.net:443
 ^D
 
-$ ./tlscheck $(cat endpoints.txt)
+$ ./tlscheck < endpoints.txt
 [… any warnings or errors …]
 ```

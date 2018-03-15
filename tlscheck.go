@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"os"
 	"strings"
@@ -34,6 +35,7 @@ var (
 	warnTime    = flag.Duration("warn_time", 7*24*time.Hour, "Warn if expiring soon.")
 	ipv6        = flag.Bool("ipv6", true, "Connect to IPv6 targets too.")
 	debug       = flag.Bool("debug", false, "Debug.")
+	endpoints   = flag.String("endpoints", "/dev/stdin", "File with list of endpoints.")
 )
 
 // take arg line and return what to connect to, and the TLS hostname.
@@ -115,6 +117,21 @@ func durFormat(d time.Duration) string {
 	return ret
 }
 
+func getEndpoints() []string {
+	b, err := ioutil.ReadFile(*endpoints)
+	if err != nil {
+		log.Fatalf("Failed to read %q: %v", *endpoints, err)
+	}
+	var ret []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if len(line) == 0 || line[0] == '#' {
+			continue
+		}
+		ret = append(ret, line)
+	}
+	return ret
+}
+
 func main() {
 	flag.Parse()
 	ctx := context.Background()
@@ -124,15 +141,14 @@ func main() {
 		log.SetLevel(log.DebugLevel)
 	}
 
-	addrs := make([][]string, flag.NArg(), flag.NArg())
-	ports := make([]string, flag.NArg(), flag.NArg())
-	tlsHosts := make([]string, flag.NArg(), flag.NArg())
+	ep := getEndpoints()
+	addrs := make([][]string, len(ep), len(ep))
+	ports := make([]string, len(ep), len(ep))
+	tlsHosts := make([]string, len(ep), len(ep))
+
 	log.Debugf("Resolving…")
-	for n, line := range flag.Args() {
+	for n, line := range ep {
 		n := n
-		if line[0] == '#' {
-			continue
-		}
 		host, tlsHost, err := parse(line)
 		if err != nil {
 			log.Fatalf("Failed to parse line %q: %v", line, err)
