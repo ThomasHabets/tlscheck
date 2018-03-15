@@ -1,6 +1,18 @@
 # tlscheck
 
+https://github.com/ThomasHabets/tlscheck
+
 This is not an official Google product.
+
+
+
+## Building
+
+```
+$ go get github.com/sirupsen/logrus
+$ go get golang.org/x/sync/semaphore
+$ go build tlscheck.go
+```
 
 ## Example
 
