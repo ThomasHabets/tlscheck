@@ -175,7 +175,7 @@ func main() {
 
 	log.Debugf("Connecting…")
 	errCh := make(chan bool, 1)
-	for n, line := range flag.Args() {
+	for n, line := range ep {
 		n := n
 		line := line
 		for _, endpointAddr := range addrs[n] {
