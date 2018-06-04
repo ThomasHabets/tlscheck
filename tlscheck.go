@@ -97,6 +97,8 @@ func check(ctx context.Context, endpoint, tlsHost string) error {
 		remaining := durTrunc(cert.NotAfter.Sub(time.Now()), time.Hour)
 		if remaining < *warnTime {
 			log.Warningf("Remaining time on %q endpoint %q: %v (%v)", cert.Subject.CommonName, endpoint, durFormat(remaining), cert.NotAfter)
+		} else if *debug {
+			log.Debugf("Remaining time on %q endpoint %q: %v (%v)", cert.Subject.CommonName, endpoint, durFormat(remaining), cert.NotAfter)
 		}
 	}
 	return nil
