@@ -74,23 +74,44 @@ func check(ctx context.Context, endpoint, tlsHost string) error {
 	log.Debugf("Checking endpoint %q host %q", endpoint, tlsHost)
 
 	dialer := net.Dialer{}
+
+	// Connect.
+	st := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", endpoint)
+	cont := time.Now()
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-
-	// TLS handshake.
 	c := tls.Client(conn, &tls.Config{
 		ServerName: tlsHost,
 	})
+
+	// TLS handshake.
 	if err := c.Handshake(); err != nil {
 		return fmt.Errorf("handshake error for %q: %v", tlsHost, err)
 	}
+	et := time.Now()
+	log.Debugf("(%s/%s) Dial time: %v", tlsHost, endpoint, cont.Sub(st))
+	log.Debugf("(%s/%s) TLS handshake time: %v", tlsHost, endpoint, et.Sub(cont))
+	log.Debugf("(%s/%s) Setup total time: %v", tlsHost, endpoint, et.Sub(st))
 	defer c.Close()
 
+	state := c.ConnectionState()
+	log.Debugf("(%s/%s) Version: %x", tlsHost, endpoint, state.Version)
+	log.Debugf("(%s/%s) CipherSuite: %s", tlsHost, endpoint, tls.CipherSuiteName(state.CipherSuite))
+	log.Debugf("(%s/%s) Protocol: %q", tlsHost, endpoint, state.NegotiatedProtocol)
+	log.Debugf("(%s/%s) ServerName: %q", tlsHost, endpoint, state.NegotiatedProtocol)
+	log.Debugf("(%s/%s) OSCP len: %d", tlsHost, endpoint, len(state.OCSPResponse))
+	for _, insecure := range tls.InsecureCipherSuites() {
+		if state.CipherSuite == insecure.ID {
+			log.Warningf("(%s/%s) Insecure cipher suite: %s", tls.CipherSuiteName(state.CipherSuite))
+			break
+		}
+	}
+
 	// Check connection state.
-	for _, cert := range c.ConnectionState().PeerCertificates {
+	for _, cert := range state.PeerCertificates {
 		if time.Now().After(cert.NotAfter) {
 			return fmt.Errorf("Expired cert %q", cert.Subject.CommonName)
 		}
